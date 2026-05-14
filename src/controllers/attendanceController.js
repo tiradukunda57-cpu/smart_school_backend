@@ -1,24 +1,31 @@
 const { query, getClient } = require('../config/db')
 
-// ─── Get all attendance (teacher) ─────────────────────────
+// ── Get all attendance (teacher) ──────────────────────────────
 
 const getAllAttendance = async (req, res, next) => {
   try {
     const {
-      search = '', status = '',
-      date = '', subject = '',
-      page = 1, limit = 50,
+      search  = '',
+      status  = '',
+      date    = '',
+      course  = '',
+      page    = 1,
+      limit   = 50,
     } = req.query
 
+    // Resolve teacher ID
+    const tRes = await query(
+      'SELECT id FROM teachers WHERE user_id = $1',
+      [req.user.id]
+    )
+    if (tRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Teacher profile not found.' })
+    }
+    const teacherId = tRes.rows[0].id
+
     const conditions = [`a.teacher_id = $1`]
-    const params     = []
-
-    // Get teacher id from user
-    const tRes = await query('SELECT id FROM teachers WHERE user_id = $1', [req.user.id])
-    if (tRes.rows.length === 0) return res.status(404).json({ message: 'Teacher profile not found.' })
-    params.push(tRes.rows[0].id)
-
-    let pIdx = 2
+    const params     = [teacherId]
+    let   pIdx       = 2
 
     if (search) {
       conditions.push(`(
@@ -39,33 +46,33 @@ const getAllAttendance = async (req, res, next) => {
       params.push(date)
       pIdx++
     }
-    if (subject) {
-      conditions.push(`a.subject ILIKE $${pIdx}`)
-      params.push(`%${subject}%`)
+    if (course) {
+      conditions.push(`a.course ILIKE $${pIdx}`)
+      params.push(`%${course}%`)
       pIdx++
     }
 
     const where = `WHERE ${conditions.join(' AND ')}`
 
-    // Count
     const countRes = await query(
-      `SELECT COUNT(*) FROM attendance a
+      `SELECT COUNT(*)
+       FROM attendance a
        JOIN students s ON s.id = a.student_id
        ${where}`,
       params
     )
-    const total = parseInt(countRes.rows[0].count)
-
+    const total  = parseInt(countRes.rows[0].count)
     const offset = (parseInt(page) - 1) * parseInt(limit)
+
     params.push(parseInt(limit))
     params.push(offset)
 
     const result = await query(
       `SELECT
-         a.id, a.date, a.subject, a.status, a.note,
+         a.id, a.date, a.course, a.status, a.note,
          a.created_at, a.updated_at,
          s.id   AS student_id,
-         s.first_name, s.last_name, s.grade
+         s.first_name, s.last_name, s.level
        FROM attendance a
        JOIN students s ON s.id = a.student_id
        ${where}
@@ -80,14 +87,19 @@ const getAllAttendance = async (req, res, next) => {
   }
 }
 
-// ─── Get my attendance (student) ──────────────────────────
+// ── Get my attendance (student) ───────────────────────────────
 
 const getMyAttendance = async (req, res, next) => {
   try {
     const { status = '', date = '' } = req.query
 
-    const sRes = await query('SELECT id FROM students WHERE user_id = $1', [req.user.id])
-    if (sRes.rows.length === 0) return res.status(404).json({ message: 'Student profile not found.' })
+    const sRes = await query(
+      'SELECT id FROM students WHERE user_id = $1',
+      [req.user.id]
+    )
+    if (sRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Student profile not found.' })
+    }
     const studentId = sRes.rows[0].id
 
     const conditions = [`a.student_id = $1`]
@@ -109,7 +121,7 @@ const getMyAttendance = async (req, res, next) => {
 
     const result = await query(
       `SELECT
-         a.id, a.date, a.subject, a.status, a.note, a.created_at
+         a.id, a.date, a.course, a.status, a.note, a.created_at
        FROM attendance a
        ${where}
        ORDER BY a.date DESC`,
@@ -122,7 +134,7 @@ const getMyAttendance = async (req, res, next) => {
   }
 }
 
-// ─── Bulk create attendance (teacher) ─────────────────────
+// ── Bulk create attendance ────────────────────────────────────
 
 const bulkCreateAttendance = async (req, res, next) => {
   const client = await getClient()
@@ -133,31 +145,39 @@ const bulkCreateAttendance = async (req, res, next) => {
       return res.status(400).json({ message: 'Records array is required.' })
     }
 
-    // Get teacher ID
-    const tRes = await query('SELECT id FROM teachers WHERE user_id = $1', [req.user.id])
-    if (tRes.rows.length === 0) return res.status(404).json({ message: 'Teacher profile not found.' })
+    const tRes = await query(
+      'SELECT id FROM teachers WHERE user_id = $1',
+      [req.user.id]
+    )
+    if (tRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Teacher profile not found.' })
+    }
     const teacherId = tRes.rows[0].id
 
     await client.query('BEGIN')
 
     const inserted = []
     for (const rec of records) {
-      const { student_id, status, date, subject, note } = rec
-
+      const { student_id, status, date, course, note } = rec
       if (!student_id || !status || !date) continue
 
-      const result = await client.query(
-        `INSERT INTO attendance (student_id, teacher_id, date, subject, status, note)
+      const r = await client.query(
+        `INSERT INTO attendance
+           (student_id, teacher_id, date, course, status, note)
          VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (student_id, date, subject)
-           DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, updated_at = NOW()
+         ON CONFLICT (student_id, date, course)
+           DO UPDATE SET
+             status = EXCLUDED.status,
+             note   = EXCLUDED.note,
+             updated_at = NOW()
          RETURNING *`,
-        [student_id, teacherId, date, subject || null, status, note || null]
+        [student_id, teacherId, date, course || null, status, note || null]
       )
-      inserted.push(result.rows[0])
+      inserted.push(r.rows[0])
     }
 
     await client.query('COMMIT')
+
     return res.status(201).json({
       message: `${inserted.length} attendance record(s) saved.`,
       records: inserted,
@@ -170,53 +190,70 @@ const bulkCreateAttendance = async (req, res, next) => {
   }
 }
 
-// ─── Create single attendance ──────────────────────────────
+// ── Create single attendance ──────────────────────────────────
 
 const createAttendance = async (req, res, next) => {
   try {
-    const { student_id, status, date, subject, note } = req.body
+    const { student_id, status, date, course, note } = req.body
 
     if (!student_id || !status || !date) {
-      return res.status(400).json({ message: 'student_id, status, and date are required.' })
+      return res.status(400).json({
+        message: 'student_id, status and date are required.'
+      })
     }
 
-    const tRes = await query('SELECT id FROM teachers WHERE user_id = $1', [req.user.id])
-    if (tRes.rows.length === 0) return res.status(404).json({ message: 'Teacher profile not found.' })
+    const tRes = await query(
+      'SELECT id FROM teachers WHERE user_id = $1',
+      [req.user.id]
+    )
+    if (tRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Teacher profile not found.' })
+    }
 
     const result = await query(
-      `INSERT INTO attendance (student_id, teacher_id, date, subject, status, note)
+      `INSERT INTO attendance
+         (student_id, teacher_id, date, course, status, note)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [student_id, tRes.rows[0].id, date, subject || null, status, note || null]
+      [student_id, tRes.rows[0].id, date, course || null, status, note || null]
     )
 
-    return res.status(201).json({ message: 'Attendance recorded.', record: result.rows[0] })
+    return res.status(201).json({
+      message: 'Attendance recorded.',
+      record: result.rows[0],
+    })
   } catch (err) {
     next(err)
   }
 }
 
-// ─── Update attendance (teacher) ──────────────────────────
+// ── Update attendance ─────────────────────────────────────────
 
 const updateAttendance = async (req, res, next) => {
   try {
-    const { id } = req.params
+    const { id }         = req.params
     const { status, note } = req.body
 
-    const tRes = await query('SELECT id FROM teachers WHERE user_id = $1', [req.user.id])
-    if (tRes.rows.length === 0) return res.status(404).json({ message: 'Teacher profile not found.' })
+    const tRes = await query(
+      'SELECT id FROM teachers WHERE user_id = $1',
+      [req.user.id]
+    )
+    if (tRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Teacher profile not found.' })
+    }
 
     const existing = await query(
       'SELECT id FROM attendance WHERE id = $1 AND teacher_id = $2',
       [id, tRes.rows[0].id]
     )
     if (existing.rows.length === 0) {
-      return res.status(404).json({ message: 'Attendance record not found.' })
+      return res.status(404).json({ message: 'Record not found.' })
     }
 
     const result = await query(
       `UPDATE attendance
-       SET status = COALESCE($1, status), note = COALESCE($2, note)
+       SET status = COALESCE($1, status),
+           note   = COALESCE($2, note)
        WHERE id = $3
        RETURNING *`,
       [status, note, id]
@@ -228,14 +265,19 @@ const updateAttendance = async (req, res, next) => {
   }
 }
 
-// ─── Delete attendance (teacher) ──────────────────────────
+// ── Delete attendance ─────────────────────────────────────────
 
 const deleteAttendance = async (req, res, next) => {
   try {
     const { id } = req.params
 
-    const tRes = await query('SELECT id FROM teachers WHERE user_id = $1', [req.user.id])
-    if (tRes.rows.length === 0) return res.status(404).json({ message: 'Teacher profile not found.' })
+    const tRes = await query(
+      'SELECT id FROM teachers WHERE user_id = $1',
+      [req.user.id]
+    )
+    if (tRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Teacher profile not found.' })
+    }
 
     const result = await query(
       'DELETE FROM attendance WHERE id = $1 AND teacher_id = $2 RETURNING id',
@@ -252,7 +294,7 @@ const deleteAttendance = async (req, res, next) => {
   }
 }
 
-// ─── Get attendance summary for a student ─────────────────
+// ── Attendance summary ────────────────────────────────────────
 
 const getAttendanceSummary = async (req, res, next) => {
   try {
@@ -260,10 +302,10 @@ const getAttendanceSummary = async (req, res, next) => {
 
     const result = await query(
       `SELECT
-         COUNT(*) FILTER (WHERE status = 'Present')  AS present,
-         COUNT(*) FILTER (WHERE status = 'Absent')   AS absent,
-         COUNT(*) FILTER (WHERE status = 'Late')     AS late,
-         COUNT(*) FILTER (WHERE status = 'Excused')  AS excused,
+         COUNT(*) FILTER (WHERE status = 'Present') AS present,
+         COUNT(*) FILTER (WHERE status = 'Absent')  AS absent,
+         COUNT(*) FILTER (WHERE status = 'Late')    AS late,
+         COUNT(*) FILTER (WHERE status = 'Excused') AS excused,
          COUNT(*) AS total
        FROM attendance
        WHERE student_id = $1`,

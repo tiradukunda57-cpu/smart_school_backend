@@ -7,17 +7,16 @@ const {
   deleteStudent,
   getStudentStats,
 } = require('../controllers/studentController')
-const { authenticate } = require('../middleware/auth')
-const { roleCheck }    = require('../middleware/roleCheck')
+const { authenticate }            = require('../middleware/auth')
+const { approvedTeacher }         = require('../middleware/roleCheck')
 
-// All routes require authentication
 router.use(authenticate)
 
-// Teacher only
-router.get('/',            roleCheck('teacher'), getAllStudents)
-router.get('/stats',       roleCheck('teacher'), getStudentStats)
-router.get('/:id',         roleCheck('teacher'), getStudentById)
-router.put('/:id',         roleCheck('teacher'), updateStudent)
-router.delete('/:id',      roleCheck('teacher'), deleteStudent)
+// All teacher routes require approved status
+router.get('/',       approvedTeacher, getAllStudents)
+router.get('/stats',  approvedTeacher, getStudentStats)
+router.get('/:id',    approvedTeacher, getStudentById)
+router.put('/:id',    approvedTeacher, updateStudent)
+router.delete('/:id', approvedTeacher, deleteStudent)
 
 module.exports = router

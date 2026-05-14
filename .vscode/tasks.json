@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Initialize Database",
+			"type": "shell",
+			"command": "npm run db:init"
+		},
+		{
+			"label": "Initialize Database",
+			"type": "shell",
+			"command": "npm run db:init"
+		}
+	]
+}

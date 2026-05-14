@@ -1,9 +1,6 @@
-const jwt = require('jsonwebtoken')
+const jwt       = require('jsonwebtoken')
 const { query } = require('../config/db')
 
-/**
- * Verify JWT and attach user to request
- */
 const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization
@@ -12,9 +9,6 @@ const authenticate = async (req, res, next) => {
     }
 
     const token = authHeader.split(' ')[1]
-    if (!token) {
-      return res.status(401).json({ message: 'Access denied. Invalid token format.' })
-    }
 
     let decoded
     try {
@@ -26,9 +20,8 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ message: 'Invalid token.' })
     }
 
-    // Verify user still exists in DB
     const result = await query(
-      'SELECT id, email, role FROM users WHERE id = $1',
+      'SELECT id, email, role, is_active FROM users WHERE id = $1',
       [decoded.id]
     )
 
@@ -36,7 +29,13 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ message: 'User no longer exists.' })
     }
 
-    req.user = result.rows[0]
+    const user = result.rows[0]
+
+    if (!user.is_active) {
+      return res.status(403).json({ message: 'Account is deactivated. Contact admin.' })
+    }
+
+    req.user = user
     next()
   } catch (err) {
     console.error('Auth middleware error:', err.message)

@@ -1,6 +1,6 @@
 const { query } = require('../config/db')
 
-// ─── Get all teachers (public within app) ─────────────────
+// ── Get all teachers ──────────────────────────────────────────
 
 const getAllTeachers = async (req, res, next) => {
   try {
@@ -9,12 +9,13 @@ const getAllTeachers = async (req, res, next) => {
 
     const params = []
     let where = ''
+
     if (search) {
       params.push(`%${search}%`)
       where = `WHERE (
         t.first_name ILIKE $1 OR
         t.last_name  ILIKE $1 OR
-        t.subject    ILIKE $1 OR
+        t.course     ILIKE $1 OR
         CONCAT(t.first_name,' ',t.last_name) ILIKE $1
       )`
     }
@@ -25,13 +26,14 @@ const getAllTeachers = async (req, res, next) => {
     )
     const total = parseInt(countRes.rows[0].count)
 
-    const dataParams = [...params, parseInt(limit), offset]
     const pIdx = params.length
+    const dataParams = [...params, parseInt(limit), offset]
 
     const result = await query(
       `SELECT
-         t.id, t.user_id, t.first_name, t.last_name,
-         t.phone, t.subject, t.qualification, t.bio,
+         t.id, t.user_id,
+         t.first_name, t.last_name,
+         t.phone, t.course, t.qualification, t.bio,
          t.created_at, u.email
        FROM teachers t
        JOIN users u ON u.id = t.user_id
@@ -47,18 +49,16 @@ const getAllTeachers = async (req, res, next) => {
   }
 }
 
-// ─── Get teacher by ID ─────────────────────────────────────
+// ── Get teacher by ID ─────────────────────────────────────────
 
 const getTeacherById = async (req, res, next) => {
   try {
-    const { id } = req.params
-
     const result = await query(
       `SELECT t.*, u.email, u.role, u.created_at AS user_created_at
        FROM teachers t
        JOIN users u ON u.id = t.user_id
        WHERE t.id = $1`,
-      [id]
+      [req.params.id]
     )
 
     if (result.rows.length === 0) {
@@ -71,14 +71,14 @@ const getTeacherById = async (req, res, next) => {
   }
 }
 
-// ─── Update teacher (self only) ────────────────────────────
+// ── Update teacher (own profile only) ────────────────────────
 
 const updateTeacher = async (req, res, next) => {
   try {
     const { id } = req.params
-    const { first_name, last_name, phone, subject, qualification, bio } = req.body
+    // course is NOT updatable (UNIQUE constraint, identifies teacher)
+    const { first_name, last_name, phone, qualification, bio } = req.body
 
-    // Verify ownership
     const existing = await query(
       'SELECT id, user_id FROM teachers WHERE id = $1',
       [id]
@@ -92,19 +92,17 @@ const updateTeacher = async (req, res, next) => {
 
     const result = await query(
       `UPDATE teachers
-       SET
-         first_name    = COALESCE($1, first_name),
-         last_name     = COALESCE($2, last_name),
-         phone         = COALESCE($3, phone),
-         subject       = COALESCE($4, subject),
-         qualification = COALESCE($5, qualification),
-         bio           = COALESCE($6, bio)
-       WHERE id = $7
+       SET first_name    = COALESCE($1, first_name),
+           last_name     = COALESCE($2, last_name),
+           phone         = COALESCE($3, phone),
+           qualification = COALESCE($4, qualification),
+           bio           = COALESCE($5, bio)
+       WHERE id = $6
        RETURNING *`,
-      [first_name, last_name, phone, subject, qualification, bio, id]
+      [first_name, last_name, phone, qualification, bio, id]
     )
 
-    return res.json({ message: 'Teacher profile updated.', teacher: result.rows[0] })
+    return res.json({ message: 'Profile updated.', teacher: result.rows[0] })
   } catch (err) {
     next(err)
   }

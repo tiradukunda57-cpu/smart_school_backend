@@ -7,18 +7,19 @@ const {
   updateAssignment,
   deleteAssignment,
 } = require('../controllers/assignmentController')
-const { authenticate } = require('../middleware/auth')
-const { roleCheck }    = require('../middleware/roleCheck')
+const { authenticate }                     = require('../middleware/auth')
+const { roleCheck, approvedTeacher }       = require('../middleware/roleCheck')
+const { upload, uploadAssignment: setDir } = require('../middleware/upload')
 
 router.use(authenticate)
 
-// Both roles — read
+// Both roles can read assignments
 router.get('/',       getAllAssignments)
 router.get('/:id',    getAssignmentById)
 
-// Teacher only — write
-router.post('/',      roleCheck('teacher'), createAssignment)
-router.put('/:id',    roleCheck('teacher'), updateAssignment)
-router.delete('/:id', roleCheck('teacher'), deleteAssignment)
+// Teachers write — only APPROVED teachers can post assignments to students
+router.post('/',      approvedTeacher, setDir, upload.array('files', 10), createAssignment)
+router.put('/:id',    approvedTeacher, updateAssignment)
+router.delete('/:id', approvedTeacher, deleteAssignment)
 
 module.exports = router

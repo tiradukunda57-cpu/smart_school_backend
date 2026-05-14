@@ -9,22 +9,22 @@ const {
   deleteAttendance,
   getAttendanceSummary,
 } = require('../controllers/attendanceController')
-const { authenticate } = require('../middleware/auth')
-const { roleCheck }    = require('../middleware/roleCheck')
+const { authenticate }            = require('../middleware/auth')
+const { roleCheck, approvedTeacher } = require('../middleware/roleCheck')
 
 router.use(authenticate)
 
-// Student routes
-router.get('/my',                    roleCheck('student'), getMyAttendance)
+// Student — view own attendance
+router.get('/my',                 roleCheck('student'), getMyAttendance)
 
-// Teacher routes
-router.get('/',                      roleCheck('teacher'), getAllAttendance)
-router.post('/',                     roleCheck('teacher'), createAttendance)
-router.post('/bulk',                 roleCheck('teacher'), bulkCreateAttendance)
-router.put('/:id',                   roleCheck('teacher'), updateAttendance)
-router.delete('/:id',                roleCheck('teacher'), deleteAttendance)
+// Shared — summary
+router.get('/summary/:studentId', getAttendanceSummary)
 
-// Both
-router.get('/summary/:studentId',    authenticate,         getAttendanceSummary)
+// Teacher — all require approved status
+router.get('/',                   approvedTeacher, getAllAttendance)
+router.post('/bulk',              approvedTeacher, bulkCreateAttendance)
+router.post('/',                  approvedTeacher, createAttendance)
+router.put('/:id',                approvedTeacher, updateAttendance)
+router.delete('/:id',             approvedTeacher, deleteAttendance)
 
 module.exports = router

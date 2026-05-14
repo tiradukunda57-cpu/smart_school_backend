@@ -1,62 +1,43 @@
 const { query } = require('../config/db')
 
-// ─── Get all conversations for current user ────────────────
-
+// ── Get all conversations for current user ─────────────────────
 const getConversations = async (req, res, next) => {
   try {
     const userId = req.user.id
 
-    // Get last message per conversation partner with unread count
     const result = await query(
-      `WITH conversation_partners AS (
-         SELECT DISTINCT
-           CASE
-             WHEN sender_id   = $1 THEN receiver_id
-             WHEN receiver_id = $1 THEN sender_id
-           END AS other_user_id
-         FROM messages
-         WHERE sender_id = $1 OR receiver_id = $1
-       ),
-       last_messages AS (
-         SELECT DISTINCT ON (
-           CASE WHEN sender_id = $1 THEN receiver_id ELSE sender_id END
-         )
+      `WITH msg_pairs AS (
+         SELECT
            CASE WHEN sender_id = $1 THEN receiver_id ELSE sender_id END AS other_user_id,
-           content AS last_message,
-           created_at AS last_at
+           MAX(created_at) AS last_at
          FROM messages
          WHERE sender_id = $1 OR receiver_id = $1
-         ORDER BY
-           CASE WHEN sender_id = $1 THEN receiver_id ELSE sender_id END,
-           created_at DESC
-       ),
-       unread_counts AS (
-         SELECT sender_id AS other_user_id, COUNT(*) AS unread_count
-         FROM messages
-         WHERE receiver_id = $1 AND is_read = FALSE
-         GROUP BY sender_id
+         GROUP BY
+           CASE WHEN sender_id = $1 THEN receiver_id ELSE sender_id END
        )
        SELECT
-         cp.other_user_id,
+         mp.other_user_id,
          u.role,
-         CASE
-           WHEN u.role = 'teacher' THEN t.first_name
-           WHEN u.role = 'student' THEN s.first_name
-         END AS first_name,
-         CASE
-           WHEN u.role = 'teacher' THEN t.last_name
-           WHEN u.role = 'student' THEN s.last_name
-         END AS last_name,
-         lm.last_message,
-         lm.last_at,
-         COALESCE(uc.unread_count, 0) AS unread_count
-       FROM conversation_partners cp
-       JOIN users u ON u.id = cp.other_user_id
+         COALESCE(t.first_name, s.first_name, 'Admin')  AS first_name,
+         COALESCE(t.last_name,  s.last_name,  'User')   AS last_name,
+         mp.last_at,
+         (
+           SELECT content FROM messages
+           WHERE (sender_id = $1 AND receiver_id = mp.other_user_id)
+              OR (sender_id = mp.other_user_id AND receiver_id = $1)
+           ORDER BY created_at DESC LIMIT 1
+         ) AS last_message,
+         (
+           SELECT COUNT(*) FROM messages
+           WHERE sender_id = mp.other_user_id
+             AND receiver_id = $1
+             AND is_read = FALSE
+         ) AS unread_count
+       FROM msg_pairs mp
+       JOIN users u ON u.id = mp.other_user_id
        LEFT JOIN teachers t ON t.user_id = u.id
        LEFT JOIN students s ON s.user_id = u.id
-       LEFT JOIN last_messages lm ON lm.other_user_id = cp.other_user_id
-       LEFT JOIN unread_counts uc ON uc.other_user_id = cp.other_user_id
-       ORDER BY lm.last_at DESC NULLS LAST`,
+       ORDER BY mp.last_at DESC NULLS LAST`,
       [userId]
     )
 
@@ -66,36 +47,46 @@ const getConversations = async (req, res, next) => {
   }
 }
 
-// ─── Get messages with a specific user ────────────────────
-
+// ── Get messages with a specific user ─────────────────────────
 const getMessages = async (req, res, next) => {
   try {
     const userId      = req.user.id
     const otherUserId = parseInt(req.params.userId)
 
-    if (!otherUserId) {
-      return res.status(400).json({ message: 'User ID is required.' })
+    if (!otherUserId || isNaN(otherUserId)) {
+      return res.status(400).json({ message: 'Valid user ID is required.' })
     }
 
-    // Mark messages from other user as read
+    // Verify other user exists
+    const otherUserRes = await query(
+      'SELECT id, role FROM users WHERE id = $1',
+      [otherUserId]
+    )
+    if (otherUserRes.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found.' })
+    }
+
+    // Mark incoming messages from otherUser as read
     await query(
-      `UPDATE messages SET is_read = TRUE
+      `UPDATE messages
+       SET is_read = TRUE
        WHERE sender_id = $1 AND receiver_id = $2 AND is_read = FALSE`,
       [otherUserId, userId]
     )
 
+    // Fetch full message history
     const result = await query(
       `SELECT
-         m.id, m.sender_id, m.receiver_id,
-         m.content, m.is_read, m.created_at,
-         CASE
-           WHEN m.sender_id = $1 THEN 'me'
-           ELSE 'other'
-         END AS direction
+         m.id,
+         m.sender_id,
+         m.receiver_id,
+         m.content,
+         m.is_read,
+         m.created_at,
+         CASE WHEN m.sender_id = $1 THEN 'me' ELSE 'other' END AS direction
        FROM messages m
-       WHERE
-         (m.sender_id = $1 AND m.receiver_id = $2) OR
-         (m.sender_id = $2 AND m.receiver_id = $1)
+       WHERE (m.sender_id = $1 AND m.receiver_id = $2)
+          OR (m.sender_id = $2 AND m.receiver_id = $1)
        ORDER BY m.created_at ASC`,
       [userId, otherUserId]
     )
@@ -106,40 +97,57 @@ const getMessages = async (req, res, next) => {
   }
 }
 
-// ─── Send a message ───────────────────────────────────────
-
+// ── Send message ───────────────────────────────────────────────
 const sendMessage = async (req, res, next) => {
   try {
-    const senderId    = req.user.id
+    const senderId              = req.user.id
     const { receiver_id, content } = req.body
 
-    if (!receiver_id || !content?.trim()) {
-      return res.status(400).json({ message: 'receiver_id and content are required.' })
+    if (!receiver_id) {
+      return res.status(400).json({ message: 'receiver_id is required.' })
+    }
+    if (!content || !content.trim()) {
+      return res.status(400).json({ message: 'Message content is required.' })
     }
 
-    if (parseInt(receiver_id) === senderId) {
+    const receiverId = parseInt(receiver_id)
+    if (isNaN(receiverId)) {
+      return res.status(400).json({ message: 'Invalid receiver_id.' })
+    }
+
+    if (receiverId === senderId) {
       return res.status(400).json({ message: 'You cannot message yourself.' })
     }
 
     // Verify receiver exists
     const receiverRes = await query(
-      'SELECT id, role FROM users WHERE id = $1',
-      [receiver_id]
+      'SELECT id, role FROM users WHERE id = $1 AND is_active = TRUE',
+      [receiverId]
     )
     if (receiverRes.rows.length === 0) {
-      return res.status(404).json({ message: 'Receiver not found.' })
+      return res.status(404).json({ message: 'Receiver not found or inactive.' })
     }
 
-    // Students can only message teachers
-    if (req.user.role === 'student' && receiverRes.rows[0].role !== 'teacher') {
-      return res.status(403).json({ message: 'Students can only message teachers.' })
+    const receiverRole = receiverRes.rows[0].role
+    const senderRole   = req.user.role
+
+    // Rules:
+    // Students  → can message teachers and admin
+    // Teachers  → can message students, other teachers, and admin
+    // Admin     → can message anyone
+    if (senderRole === 'student') {
+      if (receiverRole === 'student') {
+        return res.status(403).json({
+          message: 'Students can only message teachers or admin.',
+        })
+      }
     }
 
     const result = await query(
       `INSERT INTO messages (sender_id, receiver_id, content)
        VALUES ($1, $2, $3)
        RETURNING *`,
-      [senderId, receiver_id, content.trim()]
+      [senderId, receiverId, content.trim()]
     )
 
     return res.status(201).json({
@@ -151,32 +159,32 @@ const sendMessage = async (req, res, next) => {
   }
 }
 
-// ─── Mark message as read ─────────────────────────────────
-
+// ── Mark message as read ────────────────────────────────────────
 const markAsRead = async (req, res, next) => {
   try {
     const { id } = req.params
 
     await query(
-      'UPDATE messages SET is_read = TRUE WHERE id = $1 AND receiver_id = $2',
+      `UPDATE messages
+       SET is_read = TRUE
+       WHERE id = $1 AND receiver_id = $2`,
       [id, req.user.id]
     )
 
-    return res.json({ message: 'Message marked as read.' })
+    return res.json({ message: 'Marked as read.' })
   } catch (err) {
     next(err)
   }
 }
 
-// ─── Get unread count ─────────────────────────────────────
-
+// ── Get unread count ────────────────────────────────────────────
 const getUnreadCount = async (req, res, next) => {
   try {
     const result = await query(
-      'SELECT COUNT(*) FROM messages WHERE receiver_id = $1 AND is_read = FALSE',
+      `SELECT COUNT(*) FROM messages
+       WHERE receiver_id = $1 AND is_read = FALSE`,
       [req.user.id]
     )
-
     return res.json({ count: parseInt(result.rows[0].count) })
   } catch (err) {
     next(err)

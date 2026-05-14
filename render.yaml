@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: smart-school-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DB_HOST
+        fromSecret: db_host
+      - key: DB_PORT
+        value: 5432
+      - key: DB_NAME
+        fromSecret: db_name
+      - key: DB_USER
+        fromSecret: db_user
+      - key: DB_PASSWORD
+        fromSecret: db_password
+      - key: JWT_SECRET
+        fromSecret: jwt_secret
+      - key: CORS_ORIGIN
+        value: https://your-frontend-url.vercel.app
+
+  - type: pserv
+    name: smart-school-db
+    runtime: postgresql
+    ipAllowList: []  # Only accessible by the web service
